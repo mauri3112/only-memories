@@ -18,6 +18,8 @@ Some memory types also carry:
 - `expiration`: a hard date after which the memory should no longer be surfaced unless explicitly requested.
 - `decay`: gradual reduction in importance over time.
 
+See [Memory Types](memory-types.md) for a Mermaid diagram of the memory type taxonomy and the behavioral differences between each type.
+
 ## Axioms
 
 Axioms are identity-level memories that should never be muted or deleted. They can be superseded, but the concept stays alive.

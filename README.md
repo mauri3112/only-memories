@@ -54,6 +54,8 @@ only-memories/
       styles.css
   docs/
     architecture.md
+    memory-types.md
+    source-links.md
   docker-compose.yml
 ```
 
@@ -88,6 +90,8 @@ docker compose up --build
 ```
 
 ## API examples
+
+See [Memory Types](docs/memory-types.md) for the type map, Mermaid diagrams, and behavioral differences between axioms, preferences, events, tasks, artifacts, sources, and other memory classes.
 
 Create a memory:
 
