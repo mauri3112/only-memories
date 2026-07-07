@@ -13,6 +13,7 @@ import {
   Cadence,
   Memory,
   MemoryType,
+  SearchScope,
   createMemory,
   listMemories,
   navigateMemory,
@@ -28,31 +29,64 @@ const seedMemories: Memory[] = [
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
     source: "sample",
+    source_links: [
+      {
+        id: "seed-source-1",
+        memory_id: "seed-1",
+        label: "Operator note",
+        kind: "manual",
+        uri: "only-memories://sample/operator-note",
+        open_hint: "Open the local source note",
+        metadata: {},
+        created_at: new Date().toISOString(),
+      },
+    ],
     cadence: "weekly",
     expires_at: null,
     base_importance: 0.84,
     access_count: 6,
     metadata: {},
+    axiom_key: null,
+    version: 1,
+    supersedes_id: null,
+    is_current: true,
     rank: 0.91,
   },
   {
     id: "seed-2",
-    type: "project",
-    content: "only-memories stores typed, connected memories that an agent can maintain continuously.",
+    type: "axiom",
+    content: "A person's identity can change over time, but earlier identity facts should remain preserved.",
     happened_at: new Date().toISOString(),
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
     source: "sample",
-    cadence: "monthly",
+    source_links: [
+      {
+        id: "seed-source-2",
+        memory_id: "seed-2",
+        label: "Identity axiom proposal",
+        kind: "design-note",
+        uri: "only-memories://docs/axioms",
+        open_hint: "Open the design note that introduced axiom memory",
+        metadata: {},
+        created_at: new Date().toISOString(),
+      },
+    ],
+    cadence: "none",
     expires_at: null,
     base_importance: 0.78,
     access_count: 3,
     metadata: {},
+    axiom_key: "identity-continuity",
+    version: 2,
+    supersedes_id: "seed-old-identity",
+    is_current: true,
     rank: 0.82,
   },
 ];
 
 const memoryTypes: MemoryType[] = [
+  "axiom",
   "preference",
   "project",
   "decision",
@@ -76,6 +110,10 @@ export function App() {
   const [content, setContent] = useState("");
   const [type, setType] = useState<MemoryType>("note");
   const [cadence, setCadence] = useState<Cadence>("weekly");
+  const [searchScope, setSearchScope] = useState<SearchScope>("general");
+  const [axiomKey, setAxiomKey] = useState("");
+  const [sourceUri, setSourceUri] = useState("");
+  const [sourceKind, setSourceKind] = useState("manual");
   const [status, setStatus] = useState("sample data shown until the API responds");
 
   const selected = memories.find((memory) => memory.id === selectedId) ?? memories[0];
@@ -114,7 +152,7 @@ export function App() {
     if (!query.trim()) {
       return;
     }
-    const response = await searchMemories(query);
+    const response = await searchMemories(query, searchScope);
     setMemories(response.results.length ? response.results : memories);
     if (response.results[0]) {
       setSelectedId(response.results[0].id);
@@ -126,16 +164,30 @@ export function App() {
     if (!content.trim()) {
       return;
     }
+    const sourceLinks = sourceUri.trim()
+      ? [
+          {
+            label: sourceUri.trim(),
+            kind: sourceKind.trim() || "manual",
+            uri: sourceUri.trim(),
+            open_hint: "Open this source with the local handler or computer-use adapter",
+          },
+        ]
+      : [];
     const created = await createMemory({
       type,
       content,
-      cadence,
+      cadence: type === "axiom" ? "none" : cadence,
       source: "manual-ui",
       base_importance: 0.62,
+      axiom_key: type === "axiom" ? axiomKey.trim() || undefined : undefined,
+      source_links: sourceLinks,
     });
     setMemories((current) => [created, ...current.filter((memory) => !memory.id.startsWith("seed-"))]);
     setSelectedId(created.id);
     setContent("");
+    setAxiomKey("");
+    setSourceUri("");
     setStatus("memory added and connections suggested");
   }
 
@@ -169,6 +221,14 @@ export function App() {
               onChange={(event) => setQuery(event.target.value)}
               placeholder="Navigate memory..."
             />
+            <select
+              aria-label="Search scope"
+              value={searchScope}
+              onChange={(event) => setSearchScope(event.target.value as SearchScope)}
+            >
+              <option value="general">current</option>
+              <option value="remembering">remembering</option>
+            </select>
           </form>
         </header>
 
@@ -209,6 +269,9 @@ export function App() {
                 >
                   <span className="row-type">{memory.type}</span>
                   <span className="row-content">{memory.content}</span>
+                  {memory.type === "axiom" ? (
+                    <span className="row-version">v{memory.version}</span>
+                  ) : null}
                   <span className="row-rank">{Math.round((memory.rank ?? 0) * 100)}</span>
                 </button>
               ))}
@@ -237,6 +300,22 @@ export function App() {
                 </option>
               ))}
             </select>
+            <input
+              value={axiomKey}
+              onChange={(event) => setAxiomKey(event.target.value)}
+              placeholder="axiom key"
+              disabled={type !== "axiom"}
+            />
+            <input
+              value={sourceUri}
+              onChange={(event) => setSourceUri(event.target.value)}
+              placeholder="source URI"
+            />
+            <input
+              value={sourceKind}
+              onChange={(event) => setSourceKind(event.target.value)}
+              placeholder="source kind"
+            />
             <button type="submit">
               <Plus size={18} aria-hidden />
               Add memory
@@ -253,6 +332,13 @@ export function App() {
         {selected ? (
           <>
             <h2>{selected.type}</h2>
+            {selected.type === "axiom" ? (
+              <div className="axiom-banner">
+                <span>{selected.axiom_key ?? "derived-key"}</span>
+                <strong>v{selected.version}</strong>
+                <em>{selected.is_current ? "current" : "historic"}</em>
+              </div>
+            ) : null}
             <p className="selected-content">{selected.content}</p>
             <dl>
               <div>
@@ -271,7 +357,24 @@ export function App() {
                 <dt>Importance</dt>
                 <dd>{Math.round(selected.base_importance * 100)}</dd>
               </div>
+              <div>
+                <dt>Source</dt>
+                <dd>{selected.source}</dd>
+              </div>
             </dl>
+            <div className="source-links">
+              <h3>Source links</h3>
+              {selected.source_links.length === 0 ? (
+                <p>No source links yet.</p>
+              ) : (
+                selected.source_links.map((sourceLink) => (
+                  <a key={sourceLink.id} href={sourceLink.uri}>
+                    <span>{sourceLink.kind}</span>
+                    {sourceLink.label}
+                  </a>
+                ))
+              )}
+            </div>
             <div className="connections">
               <h3>Connected memories</h3>
               {connections.length === 0 ? (

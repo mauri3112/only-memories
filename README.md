@@ -9,11 +9,13 @@ It gives agents a memory system they can actually manage over time: typed memori
 Most memory systems are optimized around ingestion and retrieval. only-memories is built around stewardship:
 
 - Memories have a type, date, content, source metadata, and explicit connections.
+- Axioms preserve identity-level facts that should never be muted or deleted.
 - Different memory types can use different cadence, decay, and expiration behavior.
 - Retrieval is a navigation process through connected memories, not just a top-k vector search.
 - New connections are suggested from local embedding similarity and strengthened by use.
 - Importance is ranked through both memory properties and graph centrality.
 - Agents can continuously maintain the graph instead of waiting for occasional cleanup jobs.
+- Source links let an operator or computer-use adapter navigate back to where a memory came from.
 
 ## Current scaffold
 
@@ -24,6 +26,9 @@ This repository starts with:
 - Deterministic local embeddings for offline development.
 - Connection creation based on cosine similarity.
 - Ranked search and graph navigation endpoints.
+- Axiom version chains where normal search sees only the newest version.
+- Remembering search that can include historical axiom versions.
+- Source links for files, settings, accounts, photos, contacts, and other local origins.
 - An MCP server exposing memory tools.
 - A React + Vite dashboard that calls the backend API.
 - Docker Compose for running API and UI together.
@@ -98,12 +103,38 @@ curl -X POST http://localhost:8765/memories \
   }'
 ```
 
+Create a versioned axiom:
+
+```bash
+curl -X POST http://localhost:8765/memories \
+  -H "content-type: application/json" \
+  -d '{
+    "type": "axiom",
+    "axiom_key": "user-name",
+    "content": "The user name is Mauricio.",
+    "source": "manual",
+    "source_links": [{
+      "label": "Contacts card",
+      "kind": "mac-contacts",
+      "uri": "x-apple-contacts://person/user-name"
+    }]
+  }'
+```
+
 Search ranked memories:
 
 ```bash
 curl -X POST http://localhost:8765/search \
   -H "content-type: application/json" \
   -d '{"query": "what does the user prefer when debugging local services?", "limit": 5}'
+```
+
+Remembering search includes old axiom versions:
+
+```bash
+curl -X POST http://localhost:8765/search \
+  -H "content-type: application/json" \
+  -d '{"query": "what names has the user used?", "scope": "remembering", "limit": 5}'
 ```
 
 ## MCP
@@ -120,6 +151,7 @@ The MCP server exposes:
 
 - `remember`
 - `recall`
+- `axiom_versions`
 - `navigate_memory`
 - `reinforce_connection`
 
@@ -128,7 +160,7 @@ The MCP server exposes:
 - Agent maintenance loops for merge, prune, re-rank, and re-connect passes.
 - Pluggable embedding providers.
 - Source integrations for files, chat logs, browser history, calendars, and agent traces.
+- Computer-use source collectors for macOS settings, social accounts, photos, contacts, and recent files.
 - Standalone desktop packaging for macOS.
 - Hermes dashboard integration.
 - Multi-tenant local profiles with import/export.
-

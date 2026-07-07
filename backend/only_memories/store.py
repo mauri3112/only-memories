@@ -1,17 +1,36 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from .embeddings import cosine_similarity, embed_text
 from .ranking import rank_memory
-from .schemas import Cadence, Connection, ConnectionCreate, Memory, MemoryCreate, MemoryUpdate
+from .schemas import (
+    Cadence,
+    Connection,
+    ConnectionCreate,
+    Memory,
+    MemoryCreate,
+    MemoryType,
+    MemoryUpdate,
+    SearchScope,
+    SourceLink,
+    SourceLinkCreate,
+)
+
+KEY_RE = re.compile(r"[^a-z0-9]+")
 
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def normalize_axiom_key(content: str) -> str:
+    words = KEY_RE.sub("-", content.lower()).strip("-").split("-")
+    return "-".join(words[:8]) or "axiom"
 
 
 class MemoryStore:
@@ -42,6 +61,10 @@ class MemoryStore:
                     expires_at TEXT,
                     base_importance REAL NOT NULL,
                     access_count INTEGER NOT NULL DEFAULT 0,
+                    axiom_key TEXT,
+                    version INTEGER NOT NULL DEFAULT 1,
+                    supersedes_id TEXT REFERENCES memories(id) ON DELETE SET NULL,
+                    is_current INTEGER NOT NULL DEFAULT 1,
                     embedding TEXT NOT NULL,
                     metadata TEXT NOT NULL
                 );
@@ -54,38 +77,104 @@ class MemoryStore:
                     created_at TEXT NOT NULL,
                     PRIMARY KEY (source_id, target_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS source_links (
+                    id TEXT PRIMARY KEY,
+                    memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                    label TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    uri TEXT NOT NULL,
+                    open_hint TEXT,
+                    metadata TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
                 """
             )
+            self._ensure_column(db, "memories", "axiom_key", "TEXT")
+            self._ensure_column(db, "memories", "version", "INTEGER NOT NULL DEFAULT 1")
+            self._ensure_column(db, "memories", "supersedes_id", "TEXT")
+            self._ensure_column(db, "memories", "is_current", "INTEGER NOT NULL DEFAULT 1")
+
+    def _ensure_column(
+        self,
+        db: sqlite3.Connection,
+        table_name: str,
+        column_name: str,
+        column_definition: str,
+    ) -> None:
+        columns = {
+            row["name"]
+            for row in db.execute(f"PRAGMA table_info({table_name})").fetchall()
+        }
+        if column_name not in columns:
+            db.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}")
 
     def create_memory(self, payload: MemoryCreate) -> Memory:
         now = utc_now()
         memory_id = str(uuid.uuid4())
         happened_at = payload.happened_at or now
         embedding = embed_text(payload.content)
+        memory_type = payload.type
+        axiom_key = payload.axiom_key
+        version = 1
+        supersedes_id = None
+        is_current = True
+        expires_at = payload.expires_at
+        cadence = payload.cadence
+
         with self.connect() as db:
+            if memory_type == MemoryType.axiom:
+                axiom_key = axiom_key or normalize_axiom_key(payload.content)
+                expires_at = None
+                cadence = Cadence.none
+                previous = db.execute(
+                    """
+                    SELECT id, version
+                    FROM memories
+                    WHERE type = ? AND axiom_key = ? AND is_current = 1
+                    ORDER BY version DESC
+                    LIMIT 1
+                    """,
+                    (MemoryType.axiom.value, axiom_key),
+                ).fetchone()
+                if previous:
+                    supersedes_id = previous["id"]
+                    version = int(previous["version"]) + 1
+                    db.execute(
+                        "UPDATE memories SET is_current = 0, updated_at = ? WHERE id = ?",
+                        (now.isoformat(), supersedes_id),
+                    )
+
             db.execute(
                 """
                 INSERT INTO memories (
                     id, type, content, happened_at, created_at, updated_at, source,
-                    cadence, expires_at, base_importance, access_count, embedding, metadata
+                    cadence, expires_at, base_importance, access_count, axiom_key, version,
+                    supersedes_id, is_current, embedding, metadata
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     memory_id,
-                    payload.type.value,
+                    memory_type.value,
                     payload.content,
                     happened_at.isoformat(),
                     now.isoformat(),
                     now.isoformat(),
                     payload.source,
-                    payload.cadence.value,
-                    payload.expires_at.isoformat() if payload.expires_at else None,
+                    cadence.value,
+                    expires_at.isoformat() if expires_at else None,
                     payload.base_importance,
+                    axiom_key,
+                    version,
+                    supersedes_id,
+                    int(is_current),
                     json.dumps(embedding),
                     json.dumps(payload.metadata),
                 ),
             )
+            for source_link in payload.source_links:
+                self._insert_source_link(db, memory_id, source_link)
             for connection in payload.connections:
                 self._upsert_connection(db, memory_id, connection)
 
@@ -124,6 +213,10 @@ class MemoryStore:
                     memory_id,
                 ),
             )
+            if payload.source_links is not None:
+                db.execute("DELETE FROM source_links WHERE memory_id = ?", (memory_id,))
+                for source_link in payload.source_links:
+                    self._insert_source_link(db, memory_id, source_link)
         self.suggest_connections(memory_id)
         return self.get_memory(memory_id)
 
@@ -134,23 +227,51 @@ class MemoryStore:
                 raise KeyError(memory_id)
             return self._row_to_memory(row)
 
-    def list_memories(self, limit: int = 50, memory_type: str | None = None) -> list[Memory]:
+    def list_memories(
+        self,
+        limit: int = 50,
+        memory_type: str | None = None,
+        *,
+        include_versions: bool = False,
+    ) -> list[Memory]:
+        version_filter = "" if include_versions else " AND is_current = 1"
         with self.connect() as db:
             if memory_type:
                 rows = db.execute(
-                    "SELECT * FROM memories WHERE type = ? ORDER BY updated_at DESC LIMIT ?",
+                    f"""
+                    SELECT * FROM memories
+                    WHERE type = ?{version_filter}
+                    ORDER BY updated_at DESC
+                    LIMIT ?
+                    """,
                     (memory_type, limit),
                 ).fetchall()
             else:
                 rows = db.execute(
-                    "SELECT * FROM memories ORDER BY updated_at DESC LIMIT ?",
+                    f"""
+                    SELECT * FROM memories
+                    WHERE 1 = 1{version_filter}
+                    ORDER BY updated_at DESC
+                    LIMIT ?
+                    """,
                     (limit,),
                 ).fetchall()
         return [self._with_rank(memory) for memory in map(self._row_to_memory, rows)]
 
-    def search(self, query: str, *, limit: int = 10, memory_type: str | None = None) -> list[Memory]:
+    def search(
+        self,
+        query: str,
+        *,
+        limit: int = 10,
+        memory_type: str | None = None,
+        scope: SearchScope = SearchScope.general,
+    ) -> list[Memory]:
         query_embedding = embed_text(query)
-        memories = self.list_memories(limit=500, memory_type=memory_type)
+        memories = self.list_memories(
+            limit=500,
+            memory_type=memory_type,
+            include_versions=scope == SearchScope.remembering,
+        )
         centrality = self.centrality_scores()
 
         ranked = []
@@ -195,6 +316,37 @@ class MemoryStore:
                 (memory_id,),
             ).fetchall()
         return [self._row_to_connection(row) for row in rows]
+
+    def source_links_for(self, memory_id: str) -> list[SourceLink]:
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT * FROM source_links WHERE memory_id = ? ORDER BY created_at DESC",
+                (memory_id,),
+            ).fetchall()
+        return [self._row_to_source_link(row) for row in rows]
+
+    def version_history_for_memory(self, memory_id: str) -> tuple[Memory, list[Memory]]:
+        memory = self.get_memory(memory_id)
+        if memory.type != MemoryType.axiom or not memory.axiom_key:
+            return memory, [memory]
+        return self.version_history_for_axiom(memory.axiom_key)
+
+    def version_history_for_axiom(self, axiom_key: str) -> tuple[Memory, list[Memory]]:
+        with self.connect() as db:
+            rows = db.execute(
+                """
+                SELECT *
+                FROM memories
+                WHERE type = ? AND axiom_key = ?
+                ORDER BY version DESC, happened_at DESC
+                """,
+                (MemoryType.axiom.value, axiom_key),
+            ).fetchall()
+        if not rows:
+            raise KeyError(axiom_key)
+        versions = [self._row_to_memory(row) for row in rows]
+        current = next((memory for memory in versions if memory.is_current), versions[0])
+        return current, versions
 
     def reinforce_connection(
         self,
@@ -281,6 +433,31 @@ class MemoryStore:
         max_total = max(float(row["total"]) for row in rows) or 1.0
         return {row["target_id"]: float(row["total"]) / max_total for row in rows}
 
+    def _insert_source_link(
+        self,
+        db: sqlite3.Connection,
+        memory_id: str,
+        source_link: SourceLinkCreate,
+    ) -> None:
+        db.execute(
+            """
+            INSERT INTO source_links (
+                id, memory_id, label, kind, uri, open_hint, metadata, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(uuid.uuid4()),
+                memory_id,
+                source_link.label,
+                source_link.kind,
+                source_link.uri,
+                source_link.open_hint,
+                json.dumps(source_link.metadata),
+                utc_now().isoformat(),
+            ),
+        )
+
     def _upsert_connection(
         self,
         db: sqlite3.Connection,
@@ -315,11 +492,28 @@ class MemoryStore:
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
             source=row["source"],
+            source_links=self.source_links_for(row["id"]),
             cadence=Cadence(row["cadence"]),
             expires_at=datetime.fromisoformat(row["expires_at"]) if row["expires_at"] else None,
             base_importance=float(row["base_importance"]),
             access_count=int(row["access_count"]),
+            axiom_key=row["axiom_key"],
+            version=int(row["version"]),
+            supersedes_id=row["supersedes_id"],
+            is_current=bool(row["is_current"]),
             metadata=json.loads(row["metadata"]),
+        )
+
+    def _row_to_source_link(self, row: sqlite3.Row) -> SourceLink:
+        return SourceLink(
+            id=row["id"],
+            memory_id=row["memory_id"],
+            label=row["label"],
+            kind=row["kind"],
+            uri=row["uri"],
+            open_hint=row["open_hint"],
+            metadata=json.loads(row["metadata"]),
+            created_at=datetime.fromisoformat(row["created_at"]),
         )
 
     def _row_to_connection(self, row: sqlite3.Row) -> Connection:

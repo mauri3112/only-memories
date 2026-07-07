@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from datetime import UTC, datetime
 
-from .schemas import Cadence, Memory
+from .schemas import Cadence, Memory, MemoryType
 
 CADENCE_BOOSTS = {
     Cadence.none: 0.0,
@@ -21,6 +21,9 @@ def age_days(memory: Memory, now: datetime | None = None) -> float:
 
 def time_factor(memory: Memory, now: datetime | None = None) -> float:
     now = now or datetime.now(UTC)
+    if memory.type == MemoryType.axiom:
+        return 1.1 if memory.is_current else 0.55
+
     if memory.expires_at and memory.expires_at <= now:
         return 0.0
 

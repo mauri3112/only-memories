@@ -16,6 +16,8 @@ from .schemas import (
     ReinforceConnectionRequest,
     SearchRequest,
     SearchResponse,
+    SourceLink,
+    VersionHistoryResponse,
 )
 from .store import MemoryStore
 
@@ -53,9 +55,10 @@ def create_memory(payload: MemoryCreate, store: MemoryStore = Depends(get_store)
 def list_memories(
     limit: int = 50,
     type: str | None = None,
+    include_versions: bool = False,
     store: MemoryStore = Depends(get_store),
 ) -> list[Memory]:
-    return store.list_memories(limit=limit, memory_type=type)
+    return store.list_memories(limit=limit, memory_type=type, include_versions=include_versions)
 
 
 @app.get("/memories/{memory_id}", response_model=Memory)
@@ -83,13 +86,47 @@ def update_memory(
 def search(payload: SearchRequest, store: MemoryStore = Depends(get_store)) -> SearchResponse:
     return SearchResponse(
         query=payload.query,
-        results=store.search(payload.query, limit=payload.limit, memory_type=payload.type),
+        results=store.search(
+            payload.query,
+            limit=payload.limit,
+            memory_type=payload.type,
+            scope=payload.scope,
+        ),
     )
 
 
 @app.get("/memories/{memory_id}/connections", response_model=list[Connection])
 def connections(memory_id: str, store: MemoryStore = Depends(get_store)) -> list[Connection]:
     return store.connections_for(memory_id)
+
+
+@app.get("/memories/{memory_id}/sources", response_model=list[SourceLink])
+def source_links(memory_id: str, store: MemoryStore = Depends(get_store)) -> list[SourceLink]:
+    return store.source_links_for(memory_id)
+
+
+@app.get("/memories/{memory_id}/versions", response_model=VersionHistoryResponse)
+def memory_versions(
+    memory_id: str,
+    store: MemoryStore = Depends(get_store),
+) -> VersionHistoryResponse:
+    try:
+        current, versions = store.version_history_for_memory(memory_id)
+        return VersionHistoryResponse(current=current, versions=versions)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Memory not found") from exc
+
+
+@app.get("/axioms/{axiom_key}/versions", response_model=VersionHistoryResponse)
+def axiom_versions(
+    axiom_key: str,
+    store: MemoryStore = Depends(get_store),
+) -> VersionHistoryResponse:
+    try:
+        current, versions = store.version_history_for_axiom(axiom_key)
+        return VersionHistoryResponse(current=current, versions=versions)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Axiom not found") from exc
 
 
 @app.get("/memories/{memory_id}/navigate", response_model=NavigateResponse)

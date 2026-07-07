@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .config import get_settings
-from .schemas import MemoryCreate, ReinforceConnectionRequest, SearchRequest
+from .schemas import MemoryCreate, ReinforceConnectionRequest, SearchRequest, SearchScope, SourceLinkCreate
 from .store import MemoryStore
 
 store = MemoryStore(get_settings().db_path)
@@ -16,18 +16,60 @@ def run() -> None:
     mcp = FastMCP("only-memories")
 
     @mcp.tool()
-    def remember(content: str, type: str = "note", source: str = "mcp") -> dict:
+    def remember(
+        content: str,
+        type: str = "note",
+        source: str = "mcp",
+        axiom_key: str | None = None,
+        source_uri: str | None = None,
+        source_label: str | None = None,
+        source_kind: str = "mcp",
+    ) -> dict:
         """Create a new local memory."""
 
-        memory = store.create_memory(MemoryCreate(content=content, type=type, source=source))
+        source_links = []
+        if source_uri:
+            source_links.append(
+                SourceLinkCreate(
+                    label=source_label or source_uri,
+                    kind=source_kind,
+                    uri=source_uri,
+                )
+            )
+        memory = store.create_memory(
+            MemoryCreate(
+                content=content,
+                type=type,
+                source=source,
+                axiom_key=axiom_key,
+                source_links=source_links,
+            )
+        )
         return memory.model_dump(mode="json")
 
     @mcp.tool()
-    def recall(query: str, limit: int = 5) -> list[dict]:
-        """Search ranked memories."""
+    def recall(query: str, limit: int = 5, include_versions: bool = False) -> list[dict]:
+        """Search ranked memories. Set include_versions for remembering searches."""
 
-        request = SearchRequest(query=query, limit=limit)
-        return [memory.model_dump(mode="json") for memory in store.search(request.query, limit=limit)]
+        request = SearchRequest(
+            query=query,
+            limit=limit,
+            scope=SearchScope.remembering if include_versions else SearchScope.general,
+        )
+        return [
+            memory.model_dump(mode="json")
+            for memory in store.search(request.query, limit=limit, scope=request.scope)
+        ]
+
+    @mcp.tool()
+    def axiom_versions(axiom_key: str) -> dict:
+        """Return the current and historical versions of an axiom."""
+
+        current, versions = store.version_history_for_axiom(axiom_key)
+        return {
+            "current": current.model_dump(mode="json"),
+            "versions": [memory.model_dump(mode="json") for memory in versions],
+        }
 
     @mcp.tool()
     def navigate_memory(memory_id: str, limit: int = 8) -> dict:
