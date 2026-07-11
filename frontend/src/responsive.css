@@ -1,0 +1,20 @@
+.primary {
+  white-space: nowrap;
+}
+
+@media (max-width: 780px) {
+  .app-shell {
+    overflow-x: hidden;
+  }
+
+  .sidebar nav {
+    gap: 2px;
+  }
+
+  .sidebar nav button {
+    min-width: 0;
+    gap: 6px;
+    padding-inline: 6px;
+    font-size: 12px;
+  }
+}

@@ -24,6 +24,7 @@ def run() -> None:
         source_uri: str | None = None,
         source_label: str | None = None,
         source_kind: str = "mcp",
+        supersedes_id: str | None = None,
     ) -> dict:
         """Create a new local memory."""
 
@@ -42,24 +43,72 @@ def run() -> None:
                 type=type,
                 source=source,
                 axiom_key=axiom_key,
+                supersedes_id=supersedes_id,
                 source_links=source_links,
             )
         )
         return memory.model_dump(mode="json")
 
     @mcp.tool()
-    def recall(query: str, limit: int = 5, include_versions: bool = False) -> list[dict]:
+    def recall(
+        query: str,
+        limit: int = 5,
+        include_versions: bool = False,
+        include_forgotten: bool = False,
+    ) -> list[dict]:
         """Search ranked memories. Set include_versions for remembering searches."""
 
         request = SearchRequest(
             query=query,
             limit=limit,
             scope=SearchScope.remembering if include_versions else SearchScope.general,
+            include_forgotten=include_forgotten,
         )
         return [
             memory.model_dump(mode="json")
-            for memory in store.search(request.query, limit=limit, scope=request.scope)
+            for memory in store.search(
+                request.query,
+                limit=limit,
+                scope=request.scope,
+                include_forgotten=request.include_forgotten,
+            )
         ]
+
+    @mcp.tool()
+    def forget_memory(memory_id: str, reason: str | None = None) -> dict:
+        """Soft-forget a memory while preserving it for audit or remembering flows."""
+
+        return store.forget_memory(memory_id, reason=reason).model_dump(mode="json")
+
+    @mcp.tool()
+    def restore_memory(memory_id: str) -> dict:
+        """Restore a soft-forgotten memory to normal search results."""
+
+        return store.restore_memory(memory_id).model_dump(mode="json")
+
+    @mcp.tool()
+    def preview_maintenance() -> dict:
+        """Preview safe local maintenance actions without changing memories."""
+
+        run_id, proposals = store.preview_maintenance()
+        return {"run_id": run_id, "proposals": proposals}
+
+    @mcp.tool()
+    def apply_maintenance_proposal(proposal_id: str) -> dict:
+        """Apply one previously previewed maintenance proposal."""
+
+        proposal, memory = store.decide_maintenance(proposal_id, apply=True)
+        return {
+            "proposal": proposal,
+            "memory": memory.model_dump(mode="json") if memory else None,
+        }
+
+    @mcp.tool()
+    def dismiss_maintenance_proposal(proposal_id: str) -> dict:
+        """Dismiss one previously previewed maintenance proposal."""
+
+        proposal, _ = store.decide_maintenance(proposal_id, apply=False)
+        return {"proposal": proposal}
 
     @mcp.tool()
     def axiom_versions(axiom_key: str) -> dict:

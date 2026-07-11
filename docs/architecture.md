@@ -17,6 +17,7 @@ Some memory types also carry:
 - `cadence`: how often the memory naturally becomes relevant again.
 - `expiration`: a hard date after which the memory should no longer be surfaced unless explicitly requested.
 - `decay`: gradual reduction in importance over time.
+- `forgetting`: soft lifecycle state for outdated, rejected, or intentionally hidden memories that should remain auditable.
 
 See [Memory Types](memory-types.md) for a Mermaid diagram of the memory type taxonomy and the behavioral differences between each type.
 
@@ -35,6 +36,8 @@ The starter implementation models this with:
 
 General search and memory listing return only current versions. Remembering search can include older versions.
 
+Non-axiom memories can also be superseded by passing `supersedes_id` when creating the replacement memory. The old memory is marked non-current, the new memory gets the next version, and an `updates` connection links the new fact back to the prior one.
+
 ## Ranking
 
 The starter implementation ranks memories using:
@@ -52,19 +55,42 @@ The ranking module is intentionally small and replaceable. The long-term directi
 
 ## Connections
 
-Connections can be created manually or suggested automatically. The current local embedding implementation uses deterministic hashed token vectors so development works offline. Later providers can replace this with sentence embeddings or model-native embeddings without changing API contracts.
+Connections can be created manually or suggested automatically. Each connection has a weight and a semantic relation:
+
+- `related`: a general association, including similarity-suggested links.
+- `updates`: the source memory changes or replaces the target memory.
+- `extends`: the source memory adds detail without invalidating the target.
+- `derives`: the source memory is inferred from the target.
+- `supports`: the source memory provides evidence for the target.
+
+The current local embedding implementation uses deterministic hashed token vectors so development works offline. Later providers can replace this with sentence embeddings or model-native embeddings without changing API contracts.
+
+## Forgetting
+
+Forgetting is soft by default. A forgotten memory is marked with `is_forgotten`, `forgotten_at`, and an optional `forget_reason`; it is hidden from normal listing, search, and navigation, but remains available when an audit or remembering flow explicitly includes forgotten memories.
+
+Expiration is time-based hiding. Expired memories are also excluded from normal retrieval unless the caller asks to include expired results. This keeps temporary memories from becoming permanent context while preserving provenance for inspection.
 
 ## Agent stewardship
 
-The differentiator is active memory management. A future maintenance agent should:
+The differentiator is active memory management. V1 makes this approval-based: a preview run
+writes auditable proposals but does not modify memories. The operator applies or dismisses each
+proposal. Current deterministic proposals retire expired memories and collapse same-type near
+duplicates. Duplicate collapse transfers unique source links and outgoing connections to the
+canonical memory, then soft-forgets the duplicate.
+
+A future maintenance agent can extend this foundation to:
 
 - Merge duplicate memories.
 - Retire expired memories.
+- Soft-forget memories that are rejected, contradicted, or no longer relevant.
 - Down-rank stale but non-expired memories.
 - Strengthen useful paths.
 - Create missing bridge memories.
 - Import and normalize source data.
 - Explain why a memory was surfaced.
+
+Automatic scheduling and unreviewed mutation are intentionally out of scope for v1.
 
 ## Source collection
 

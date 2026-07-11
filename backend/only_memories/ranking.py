@@ -21,6 +21,9 @@ def age_days(memory: Memory, now: datetime | None = None) -> float:
 
 def time_factor(memory: Memory, now: datetime | None = None) -> float:
     now = now or datetime.now(UTC)
+    if memory.is_forgotten:
+        return 0.0
+
     if memory.type == MemoryType.axiom:
         return 1.1 if memory.is_current else 0.55
 

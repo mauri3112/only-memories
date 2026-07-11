@@ -36,6 +36,14 @@ class SearchScope(StrEnum):
     remembering = "remembering"
 
 
+class MemoryRelation(StrEnum):
+    related = "related"
+    updates = "updates"
+    extends = "extends"
+    derives = "derives"
+    supports = "supports"
+
+
 class SourceLinkCreate(BaseModel):
     label: str = Field(min_length=1)
     kind: str = Field(default="manual", min_length=1)
@@ -54,6 +62,7 @@ class ConnectionCreate(BaseModel):
     target_id: str
     weight: float = Field(default=0.5, ge=0, le=1)
     reason: str = "manual"
+    relation: MemoryRelation = MemoryRelation.related
 
 
 class MemoryCreate(BaseModel):
@@ -66,6 +75,7 @@ class MemoryCreate(BaseModel):
     expires_at: datetime | None = None
     base_importance: float = Field(default=0.5, ge=0, le=1)
     axiom_key: str | None = None
+    supersedes_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     connections: list[ConnectionCreate] = Field(default_factory=list)
 
@@ -75,8 +85,14 @@ class MemoryUpdate(BaseModel):
     cadence: Cadence | None = None
     expires_at: datetime | None = None
     base_importance: float | None = Field(default=None, ge=0, le=1)
+    is_forgotten: bool | None = None
+    forget_reason: str | None = None
     source_links: list[SourceLinkCreate] | None = None
     metadata: dict[str, Any] | None = None
+
+
+class ForgetMemoryRequest(BaseModel):
+    reason: str | None = None
 
 
 class Memory(BaseModel):
@@ -96,6 +112,9 @@ class Memory(BaseModel):
     version: int = 1
     supersedes_id: str | None = None
     is_current: bool = True
+    is_forgotten: bool = False
+    forgotten_at: datetime | None = None
+    forget_reason: str | None = None
     metadata: dict[str, Any]
     rank: float | None = None
 
@@ -104,6 +123,7 @@ class Connection(BaseModel):
     source_id: str
     target_id: str
     weight: float
+    relation: MemoryRelation
     reason: str
     created_at: datetime
 
@@ -113,6 +133,8 @@ class SearchRequest(BaseModel):
     limit: int = Field(default=10, ge=1, le=50)
     type: MemoryType | None = None
     scope: SearchScope = SearchScope.general
+    include_forgotten: bool = False
+    include_expired: bool = False
 
 
 class SearchResponse(BaseModel):
@@ -135,3 +157,57 @@ class ReinforceConnectionRequest(BaseModel):
     target_id: str
     amount: float = Field(default=0.1, gt=0, le=1)
     reason: str = "reinforced"
+
+
+class RankBreakdown(BaseModel):
+    importance: float
+    recency: float
+    cadence: float
+    connectedness: float
+    total: float
+
+
+class GraphNode(BaseModel):
+    memory: Memory
+
+
+class GraphResponse(BaseModel):
+    origin: Memory
+    nodes: list[Memory]
+    edges: list[Connection]
+
+
+class MaintenanceProposalType(StrEnum):
+    retire_expired = "retire_expired"
+    collapse_duplicate = "collapse_duplicate"
+    add_connection = "add_connection"
+
+
+class MaintenanceProposalStatus(StrEnum):
+    pending = "pending"
+    applied = "applied"
+    dismissed = "dismissed"
+
+
+class MaintenanceProposal(BaseModel):
+    id: str
+    run_id: str
+    type: MaintenanceProposalType
+    status: MaintenanceProposalStatus
+    memory_id: str
+    target_id: str | None = None
+    reason: str
+    score: float | None = None
+    created_at: datetime
+    decided_at: datetime | None = None
+
+
+class MaintenanceRun(BaseModel):
+    id: str
+    created_at: datetime
+    proposals: list[MaintenanceProposal]
+
+
+class MaintenanceActionResponse(BaseModel):
+    proposal: MaintenanceProposal
+    memory: Memory | None = None

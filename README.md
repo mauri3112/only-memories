@@ -25,12 +25,17 @@ This repository starts with:
 - A SQLite-backed local memory store.
 - Deterministic local embeddings for offline development.
 - Connection creation based on cosine similarity.
+- Typed connection relations for related, updating, extending, derived, and supporting facts.
 - Ranked search and graph navigation endpoints.
 - Axiom version chains where normal search sees only the newest version.
-- Remembering search that can include historical axiom versions.
+- Versioned replacement chains for non-axiom memories through `supersedes_id`.
+- Soft forgetting where hidden memories remain inspectable for audit and recovery.
+- Remembering search that can include historical memory versions.
 - Source links for files, settings, accounts, photos, contacts, and other local origins.
 - An MCP server exposing memory tools.
-- A React + Vite dashboard that calls the backend API.
+- A React + Vite operator console for search, graph navigation, provenance, version history,
+  lifecycle actions, and manual capture.
+- Preview-and-approve stewardship for expired and duplicate memories.
 - Docker Compose for running API and UI together.
 
 ## Project layout
@@ -155,13 +160,29 @@ The MCP server exposes:
 
 - `remember`
 - `recall`
+- `forget_memory`
+- `restore_memory`
 - `axiom_versions`
 - `navigate_memory`
 - `reinforce_connection`
+- `preview_maintenance`
+- `apply_maintenance_proposal`
+- `dismiss_maintenance_proposal`
 
-## Roadmap
+## V1 operator workflows
 
-- Agent maintenance loops for merge, prune, re-rank, and re-connect passes.
+- **Memories:** rank and filter current, historical, forgotten, or expired memories; inspect
+  typed graph edges, source links, and version chains; create, edit, forget, or restore records.
+- **Maintenance:** generate deterministic proposals without changing data, then apply or dismiss
+  each proposal individually. Decisions remain in SQLite for audit.
+- **Settings:** inspect local API and database availability. No external service is required.
+
+Substantive content edits create a new version that supersedes the prior memory. Metadata-only
+edits update the current record in place. The accepted visual reference is
+[docs/ui-concept-v1.png](docs/ui-concept-v1.png).
+
+## Post-v1 roadmap
+
 - Pluggable embedding providers.
 - Source integrations for files, chat logs, browser history, calendars, and agent traces.
 - Computer-use source collectors for macOS settings, social accounts, photos, contacts, and recent files.

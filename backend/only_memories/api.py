@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from functools import lru_cache
 
 import uvicorn
@@ -9,6 +10,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import get_settings
 from .schemas import (
     Connection,
+    ForgetMemoryRequest,
+    GraphResponse,
+    MaintenanceActionResponse,
+    MaintenanceProposal,
+    MaintenanceRun,
     Memory,
     MemoryCreate,
     MemoryUpdate,
@@ -48,7 +54,10 @@ def health() -> dict[str, str]:
 
 @app.post("/memories", response_model=Memory)
 def create_memory(payload: MemoryCreate, store: MemoryStore = Depends(get_store)) -> Memory:
-    return store.create_memory(payload)
+    try:
+        return store.create_memory(payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=400, detail="Superseded memory not found") from exc
 
 
 @app.get("/memories", response_model=list[Memory])
@@ -56,9 +65,17 @@ def list_memories(
     limit: int = 50,
     type: str | None = None,
     include_versions: bool = False,
+    include_forgotten: bool = False,
+    include_expired: bool = False,
     store: MemoryStore = Depends(get_store),
 ) -> list[Memory]:
-    return store.list_memories(limit=limit, memory_type=type, include_versions=include_versions)
+    return store.list_memories(
+        limit=limit,
+        memory_type=type,
+        include_versions=include_versions,
+        include_forgotten=include_forgotten,
+        include_expired=include_expired,
+    )
 
 
 @app.get("/memories/{memory_id}", response_model=Memory)
@@ -82,6 +99,26 @@ def update_memory(
         raise HTTPException(status_code=404, detail="Memory not found") from exc
 
 
+@app.post("/memories/{memory_id}/forget", response_model=Memory)
+def forget_memory(
+    memory_id: str,
+    payload: ForgetMemoryRequest | None = None,
+    store: MemoryStore = Depends(get_store),
+) -> Memory:
+    try:
+        return store.forget_memory(memory_id, reason=payload.reason if payload else None)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Memory not found") from exc
+
+
+@app.post("/memories/{memory_id}/restore", response_model=Memory)
+def restore_memory(memory_id: str, store: MemoryStore = Depends(get_store)) -> Memory:
+    try:
+        return store.restore_memory(memory_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Memory not found") from exc
+
+
 @app.post("/search", response_model=SearchResponse)
 def search(payload: SearchRequest, store: MemoryStore = Depends(get_store)) -> SearchResponse:
     return SearchResponse(
@@ -91,6 +128,8 @@ def search(payload: SearchRequest, store: MemoryStore = Depends(get_store)) -> S
             limit=payload.limit,
             memory_type=payload.type,
             scope=payload.scope,
+            include_forgotten=payload.include_forgotten,
+            include_expired=payload.include_expired,
         ),
     )
 
@@ -140,6 +179,65 @@ def navigate(
         return NavigateResponse(origin=origin, connections=related)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Memory not found") from exc
+
+
+@app.get("/memories/{memory_id}/graph", response_model=GraphResponse)
+def graph(memory_id: str, limit: int = 10, store: MemoryStore = Depends(get_store)) -> GraphResponse:
+    try:
+        origin, nodes, edges = store.graph_for(memory_id, limit=limit)
+        return GraphResponse(origin=origin, nodes=nodes, edges=edges)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Memory not found") from exc
+
+
+@app.post("/maintenance/preview", response_model=MaintenanceRun)
+def preview_maintenance(store: MemoryStore = Depends(get_store)) -> MaintenanceRun:
+    run_id, proposals = store.preview_maintenance()
+    return MaintenanceRun(
+        id=run_id,
+        created_at=min(
+            (proposal["created_at"] for proposal in proposals),
+            default=datetime.now(UTC),
+        ),
+        proposals=[MaintenanceProposal.model_validate(proposal) for proposal in proposals],
+    )
+
+
+@app.get("/maintenance/proposals", response_model=list[MaintenanceProposal])
+def maintenance_proposals(
+    run_id: str | None = None, store: MemoryStore = Depends(get_store)
+) -> list[MaintenanceProposal]:
+    return [MaintenanceProposal.model_validate(item) for item in store.maintenance_proposals(run_id)]
+
+
+@app.post("/maintenance/proposals/{proposal_id}/apply", response_model=MaintenanceActionResponse)
+def apply_maintenance(
+    proposal_id: str, store: MemoryStore = Depends(get_store)
+) -> MaintenanceActionResponse:
+    try:
+        proposal, memory = store.decide_maintenance(proposal_id, apply=True)
+        return MaintenanceActionResponse(
+            proposal=MaintenanceProposal.model_validate(proposal), memory=memory
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Maintenance proposal not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/maintenance/proposals/{proposal_id}/dismiss", response_model=MaintenanceActionResponse)
+def dismiss_maintenance(
+    proposal_id: str, store: MemoryStore = Depends(get_store)
+) -> MaintenanceActionResponse:
+    try:
+        proposal, memory = store.decide_maintenance(proposal_id, apply=False)
+        return MaintenanceActionResponse(
+            proposal=MaintenanceProposal.model_validate(proposal), memory=memory
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Maintenance proposal not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.post("/connections/reinforce")

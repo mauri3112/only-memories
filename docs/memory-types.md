@@ -86,6 +86,20 @@ flowchart LR
 
 General search is the default for assistants answering direct questions. Remembering search is for historical, audit, identity-continuity, or "what changed?" questions.
 
+By default, both planes exclude memories that are forgotten or expired. Callers can explicitly include forgotten or expired memories for audit, recovery, or "why did you stop remembering this?" workflows.
+
+## Connection Relations
+
+Connections carry both a numeric weight and a semantic relation:
+
+| Relation | Meaning |
+| --- | --- |
+| `related` | General association, usually from similarity or manual linking |
+| `updates` | Source memory changes, corrects, or replaces the target |
+| `extends` | Source memory adds detail while keeping the target valid |
+| `derives` | Source memory is inferred from the target |
+| `supports` | Source memory provides evidence for the target |
+
 ## Source Links
 
 Any memory type can include `source_links`. Source links are especially important for `source`, `artifact`, `system`, `person`, and `axiom` memories because they let a user or computer-use adapter navigate back to where the memory came from.
