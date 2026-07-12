@@ -12,6 +12,10 @@ This repo is a local-first memory service for LLM agents. Prefer changes that ke
 - The dashboard should remain a usable operator surface, not a marketing page.
 - Keep API contracts stable and documented as the project grows.
 
+## Change workflow
+
+- After completing and validating every change run, commit all scoped changes from that run directly to the `main` branch. Do not leave completed work uncommitted or on a separate branch.
+
 ## Verification
 
 Before committing backend changes:
