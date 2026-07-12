@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from context import (
     ConnectionCreate,
     MemoryCreate,
@@ -170,6 +172,56 @@ def test_content_edits_create_versions_but_metadata_edits_do_not(tmp_path):
     assert [version.version for version in versions] == [2, 1]
 
 
+def test_historical_non_axiom_cannot_create_a_branch(tmp_path):
+    store = MemoryStore(tmp_path / "memories.sqlite3")
+    original = store.create_memory(MemoryCreate(content="Use the first layout."))
+    current = store.update_memory(
+        original.id,
+        MemoryUpdate(content="Use the second layout."),
+    )
+
+    with pytest.raises(ValueError, match="historical memory"):
+        store.update_memory(
+            original.id,
+            MemoryUpdate(content="Create a competing second layout."),
+        )
+    with pytest.raises(ValueError, match="current memory"):
+        store.create_memory(
+            MemoryCreate(content="Create another branch.", supersedes_id=original.id)
+        )
+
+    history_current, versions = store.version_history_for_memory(original.id)
+
+    assert history_current.id == current.id
+    assert [version.id for version in versions if version.is_current] == [current.id]
+    assert [version.version for version in versions] == [2, 1]
+
+
+def test_content_edit_can_clear_source_links_and_metadata(tmp_path):
+    store = MemoryStore(tmp_path / "memories.sqlite3")
+    original = store.create_memory(
+        MemoryCreate(
+            content="Keep this source and metadata.",
+            source_links=[
+                SourceLinkCreate(label="Source", kind="file", uri="file:///source.md")
+            ],
+            metadata={"owner": "agent"},
+        )
+    )
+
+    replacement = store.update_memory(
+        original.id,
+        MemoryUpdate(
+            content="Remove this source and metadata.",
+            source_links=[],
+            metadata={},
+        ),
+    )
+
+    assert replacement.source_links == []
+    assert replacement.metadata == {}
+
+
 def test_maintenance_preview_requires_decision_and_collapses_duplicate(tmp_path):
     store = MemoryStore(tmp_path / "memories.sqlite3")
     canonical = store.create_memory(
@@ -205,3 +257,71 @@ def test_maintenance_preview_requires_decision_and_collapses_duplicate(tmp_path)
         "file:///first.md",
         "file:///second.md",
     }
+
+
+def test_duplicate_cluster_proposals_share_one_canonical_target(tmp_path):
+    store = MemoryStore(tmp_path / "memories.sqlite3")
+    memories = [
+        store.create_memory(
+            MemoryCreate(
+                type="preference",
+                content="The user prefers one canonical memory.",
+                source_links=[
+                    SourceLinkCreate(
+                        label=f"Source {index}",
+                        kind="file",
+                        uri=f"file:///source-{index}.md",
+                    )
+                ],
+            )
+        )
+        for index in range(3)
+    ]
+
+    _, proposals = store.preview_maintenance()
+    duplicate_proposals = [
+        proposal for proposal in proposals if proposal["type"] == "collapse_duplicate"
+    ]
+
+    assert len(duplicate_proposals) == 2
+    assert {proposal["target_id"] for proposal in duplicate_proposals} == {memories[0].id}
+    assert {proposal["memory_id"] for proposal in duplicate_proposals} == {
+        memories[1].id,
+        memories[2].id,
+    }
+
+    for proposal in reversed(duplicate_proposals):
+        store.decide_maintenance(str(proposal["id"]), apply=True)
+
+    assert store.get_memory(memories[0].id).is_forgotten is False
+    assert store.get_memory(memories[1].id).is_forgotten is True
+    assert store.get_memory(memories[2].id).is_forgotten is True
+    assert {link.uri for link in store.get_memory(memories[0].id).source_links} == {
+        "file:///source-0.md",
+        "file:///source-1.md",
+        "file:///source-2.md",
+    }
+
+
+def test_axioms_cannot_be_forgotten_or_muted(tmp_path):
+    store = MemoryStore(tmp_path / "memories.sqlite3")
+    axiom = store.create_memory(
+        MemoryCreate(type="axiom", axiom_key="identity", content="The user is Mauricio.")
+    )
+
+    with pytest.raises(ValueError, match="Axioms cannot be forgotten"):
+        store.forget_memory(axiom.id, reason="should be impossible")
+    with pytest.raises(ValueError, match="Axioms cannot be forgotten"):
+        store.update_memory(axiom.id, MemoryUpdate(is_forgotten=True))
+
+    assert store.get_memory(axiom.id).is_forgotten is False
+
+
+def test_reinforce_connection_requires_existing_memories(tmp_path):
+    store = MemoryStore(tmp_path / "memories.sqlite3")
+    memory = store.create_memory(MemoryCreate(content="An existing memory."))
+
+    with pytest.raises(KeyError):
+        store.reinforce_connection(memory.id, "missing-target")
+    with pytest.raises(KeyError):
+        store.reinforce_connection("missing-source", memory.id)

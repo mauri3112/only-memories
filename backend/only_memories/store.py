@@ -161,11 +161,15 @@ class MemoryStore:
                     self._mark_superseded(db, supersedes_id, now)
             elif supersedes_id:
                 previous = db.execute(
-                    "SELECT id, version FROM memories WHERE id = ?",
+                    "SELECT id, type, version, is_current FROM memories WHERE id = ?",
                     (supersedes_id,),
                 ).fetchone()
                 if previous is None:
                     raise KeyError(supersedes_id)
+                if previous["type"] == MemoryType.axiom.value:
+                    raise ValueError("Axioms can only be superseded by another axiom")
+                if not previous["is_current"]:
+                    raise ValueError("A new version must supersede the current memory")
                 version = int(previous["version"]) + 1
                 self._mark_superseded(db, supersedes_id, now)
 
@@ -218,17 +222,25 @@ class MemoryStore:
 
     def update_memory(self, memory_id: str, payload: MemoryUpdate) -> Memory:
         memory = self.get_memory(memory_id)
+        if payload.is_forgotten is True and memory.type == MemoryType.axiom:
+            raise ValueError("Axioms cannot be forgotten")
         if payload.content is not None and payload.content != memory.content:
-            source_links = payload.source_links or [
-                SourceLinkCreate(
-                    label=link.label,
-                    kind=link.kind,
-                    uri=link.uri,
-                    open_hint=link.open_hint,
-                    metadata=link.metadata,
-                )
-                for link in memory.source_links
-            ]
+            if not memory.is_current:
+                raise ValueError("Cannot edit the content of a historical memory")
+            source_links = (
+                payload.source_links
+                if payload.source_links is not None
+                else [
+                    SourceLinkCreate(
+                        label=link.label,
+                        kind=link.kind,
+                        uri=link.uri,
+                        open_hint=link.open_hint,
+                        metadata=link.metadata,
+                    )
+                    for link in memory.source_links
+                ]
+            )
             return self.create_memory(
                 MemoryCreate(
                     type=memory.type,
@@ -249,7 +261,9 @@ class MemoryStore:
                     ),
                     axiom_key=memory.axiom_key,
                     supersedes_id=memory.id,
-                    metadata=payload.metadata or memory.metadata,
+                    metadata=(
+                        payload.metadata if payload.metadata is not None else memory.metadata
+                    ),
                 )
             )
         content = payload.content if payload.content is not None else memory.content
@@ -307,7 +321,9 @@ class MemoryStore:
         return self.get_memory(memory_id)
 
     def forget_memory(self, memory_id: str, reason: str | None = None) -> Memory:
-        self.get_memory(memory_id)
+        memory = self.get_memory(memory_id)
+        if memory.type == MemoryType.axiom:
+            raise ValueError("Axioms cannot be forgotten")
         now = utc_now()
         with self.connect() as db:
             db.execute(
@@ -475,31 +491,64 @@ class MemoryStore:
                         )
                     )
 
-            for index, memory in enumerate(memories):
+            duplicate_candidates = [
+                memory for memory in memories if memory.type != MemoryType.axiom
+            ]
+            parents = {memory.id: memory.id for memory in duplicate_candidates}
+
+            def find(memory_id: str) -> str:
+                while parents[memory_id] != memory_id:
+                    parents[memory_id] = parents[parents[memory_id]]
+                    memory_id = parents[memory_id]
+                return memory_id
+
+            def union(first_id: str, second_id: str) -> None:
+                first_root = find(first_id)
+                second_root = find(second_id)
+                if first_root != second_root:
+                    parents[second_root] = first_root
+
+            embeddings = {
+                memory.id: self.embedding_for(memory.id) for memory in duplicate_candidates
+            }
+            for index, memory in enumerate(duplicate_candidates):
                 normalized = " ".join(memory.content.lower().split())
-                for candidate in memories[index + 1 :]:
+                for candidate in duplicate_candidates[index + 1 :]:
                     if memory.type != candidate.type:
                         continue
                     candidate_normalized = " ".join(candidate.content.lower().split())
                     similarity = cosine_similarity(
-                        self.embedding_for(memory.id), self.embedding_for(candidate.id)
+                        embeddings[memory.id], embeddings[candidate.id]
                     )
                     if normalized == candidate_normalized or similarity >= 0.92:
-                        canonical, duplicate = sorted(
-                            (memory, candidate),
-                            key=lambda item: (item.created_at, item.id),
+                        union(memory.id, candidate.id)
+
+            duplicate_groups: dict[str, list[Memory]] = {}
+            for memory in duplicate_candidates:
+                duplicate_groups.setdefault(find(memory.id), []).append(memory)
+
+            duplicate_cluster_by_id: dict[str, str] = {}
+            for group in duplicate_groups.values():
+                if len(group) < 2:
+                    continue
+                ordered = sorted(group, key=lambda item: (item.created_at, item.id))
+                canonical = ordered[0]
+                for member in ordered:
+                    duplicate_cluster_by_id[member.id] = canonical.id
+                for duplicate in ordered[1:]:
+                    similarity = cosine_similarity(
+                        embeddings[canonical.id], embeddings[duplicate.id]
+                    )
+                    proposals.append(
+                        self._proposal_dict(
+                            run_id,
+                            "collapse_duplicate",
+                            duplicate.id,
+                            "Same-type memories are near duplicates; keep the oldest canonical record.",
+                            target_id=canonical.id,
+                            score=round(similarity, 4),
                         )
-                        proposals.append(
-                            self._proposal_dict(
-                                run_id,
-                                "collapse_duplicate",
-                                duplicate.id,
-                                "Same-type memories are near duplicates; keep the older canonical record.",
-                                target_id=canonical.id,
-                                score=round(similarity, 4),
-                            )
-                        )
-                        break
+                    )
 
             proposed_pairs = {
                 tuple(sorted((str(item["memory_id"]), str(item["target_id"]))))
@@ -511,6 +560,12 @@ class MemoryStore:
                 for candidate in memories[index + 1 :]:
                     pair = tuple(sorted((memory.id, candidate.id)))
                     if pair in proposed_pairs:
+                        continue
+                    if (
+                        memory.id in duplicate_cluster_by_id
+                        and duplicate_cluster_by_id[memory.id]
+                        == duplicate_cluster_by_id.get(candidate.id)
+                    ):
                         continue
                     exists = db.execute(
                         """SELECT 1 FROM connections
@@ -641,6 +696,18 @@ class MemoryStore:
     def _collapse_duplicate(
         self, db: sqlite3.Connection, duplicate_id: str, canonical_id: str, now: datetime
     ) -> None:
+        duplicate = db.execute(
+            "SELECT type, is_forgotten FROM memories WHERE id = ?", (duplicate_id,)
+        ).fetchone()
+        canonical = db.execute(
+            "SELECT type, is_forgotten FROM memories WHERE id = ?", (canonical_id,)
+        ).fetchone()
+        if duplicate is None or canonical is None:
+            raise KeyError(duplicate_id if duplicate is None else canonical_id)
+        if duplicate["type"] == MemoryType.axiom.value:
+            raise ValueError("Axioms cannot be forgotten")
+        if canonical["is_forgotten"]:
+            raise ValueError("Cannot collapse a duplicate into a forgotten memory")
         links = db.execute(
             "SELECT * FROM source_links WHERE memory_id = ?", (duplicate_id,)
         ).fetchall()
@@ -703,7 +770,6 @@ class MemoryStore:
             if row is None:
                 raise KeyError(memory_id)
 
-            rows_by_id: dict[str, sqlite3.Row] = {row["id"]: row}
             visited = {row["id"]}
             cursor = row
             while cursor["supersedes_id"] and cursor["supersedes_id"] not in visited:
@@ -713,27 +779,23 @@ class MemoryStore:
                 ).fetchone()
                 if parent is None:
                     break
-                rows_by_id[parent["id"]] = parent
                 visited.add(parent["id"])
                 cursor = parent
 
-            cursor = row
-            while True:
-                child = db.execute(
-                    """
-                    SELECT *
-                    FROM memories
-                    WHERE supersedes_id = ?
-                    ORDER BY version ASC, updated_at ASC
-                    LIMIT 1
-                    """,
-                    (cursor["id"],),
-                ).fetchone()
-                if child is None or child["id"] in visited:
-                    break
-                rows_by_id[child["id"]] = child
-                visited.add(child["id"])
-                cursor = child
+            root = cursor
+            rows_by_id: dict[str, sqlite3.Row] = {root["id"]: root}
+            pending = [root["id"]]
+            while pending:
+                parent_id = pending.pop()
+                children = db.execute(
+                    "SELECT * FROM memories WHERE supersedes_id = ?",
+                    (parent_id,),
+                ).fetchall()
+                for child in children:
+                    if child["id"] in rows_by_id:
+                        continue
+                    rows_by_id[child["id"]] = child
+                    pending.append(child["id"])
 
         versions = [self._row_to_memory(row) for row in rows_by_id.values()]
         versions.sort(key=lambda item: (item.version, item.updated_at), reverse=True)
@@ -765,6 +827,8 @@ class MemoryStore:
         amount: float = 0.1,
         reason: str = "reinforced",
     ) -> None:
+        self.get_memory(source_id)
+        self.get_memory(target_id)
         with self.connect() as db:
             existing = db.execute(
                 "SELECT weight FROM connections WHERE source_id = ? AND target_id = ?",

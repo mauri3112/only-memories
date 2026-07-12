@@ -48,8 +48,8 @@ def get_store() -> MemoryStore:
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health(store: MemoryStore = Depends(get_store)) -> dict[str, str]:
+    return {"status": "ok", "database_path": str(store.db_path)}
 
 
 @app.post("/memories", response_model=Memory)
@@ -58,6 +58,8 @@ def create_memory(payload: MemoryCreate, store: MemoryStore = Depends(get_store)
         return store.create_memory(payload)
     except KeyError as exc:
         raise HTTPException(status_code=400, detail="Superseded memory not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.get("/memories", response_model=list[Memory])
@@ -97,6 +99,8 @@ def update_memory(
         return store.update_memory(memory_id, payload)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Memory not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.post("/memories/{memory_id}/forget", response_model=Memory)
@@ -109,6 +113,8 @@ def forget_memory(
         return store.forget_memory(memory_id, reason=payload.reason if payload else None)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Memory not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.post("/memories/{memory_id}/restore", response_model=Memory)
@@ -245,12 +251,15 @@ def reinforce_connection(
     payload: ReinforceConnectionRequest,
     store: MemoryStore = Depends(get_store),
 ) -> dict[str, str]:
-    store.reinforce_connection(
-        payload.source_id,
-        payload.target_id,
-        amount=payload.amount,
-        reason=payload.reason,
-    )
+    try:
+        store.reinforce_connection(
+            payload.source_id,
+            payload.target_id,
+            amount=payload.amount,
+            reason=payload.reason,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Memory not found") from exc
     return {"status": "ok"}
 
 
