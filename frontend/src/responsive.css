@@ -2,6 +2,11 @@
   white-space: nowrap;
 }
 
+.proposal-actions .primary {
+  border-color: var(--green);
+  background: var(--green);
+}
+
 .app-shell {
   grid-template-columns: 212px minmax(0, 1fr) 336px;
 }
