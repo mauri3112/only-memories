@@ -31,6 +31,76 @@ def test_store_creates_and_searches_memory(tmp_path):
     assert results[0].rank is not None
 
 
+def test_search_isolates_spaces_and_excludes_activity_recaps(tmp_path):
+    store = MemoryStore(tmp_path / "memories.sqlite3")
+    evidence = store.create_memory(
+        MemoryCreate(
+            content="Northstar evidence belongs to campaign two.",
+            space_id="experiment:run-two",
+            provenance_class="primary_source",
+            verification_status="verified",
+        )
+    )
+    recap = store.create_memory(
+        MemoryCreate(
+            content="Northstar lifecycle recap from an agent.",
+            space_id="experiment:run-two",
+            plane="activity",
+            provenance_class="agent_recap",
+        )
+    )
+    store.create_memory(
+        MemoryCreate(
+            content="Northstar evidence from another experiment.",
+            space_id="experiment:other",
+        )
+    )
+
+    normal = store.search("Northstar", space_ids=["experiment:run-two"], limit=10)
+    audit = store.search(
+        "Northstar",
+        space_ids=["experiment:run-two"],
+        planes=["knowledge", "activity"],
+        intent="audit",
+        include_generated=True,
+        limit=10,
+    )
+
+    assert [item.id for item in normal] == [evidence.id]
+    assert {item.id for item in audit} == {evidence.id, recap.id}
+
+
+def test_external_key_and_idempotency_key_prevent_duplicate_writes(tmp_path):
+    store = MemoryStore(tmp_path / "memories.sqlite3")
+    payload = MemoryCreate(
+        content="One durable publish event.",
+        source="consciousness",
+        external_key="run-2:publish:1",
+    )
+
+    first = store.create_memory_idempotent(payload, "request-1")
+    replay = store.create_memory_idempotent(payload, "request-1")
+    external_replay = store.create_memory(payload)
+
+    assert replay.id == first.id
+    assert external_replay.id == first.id
+    with pytest.raises(ValueError, match="different payload"):
+        store.create_memory_idempotent(
+            payload.model_copy(update={"content": "A different event."}),
+            "request-1",
+        )
+
+
+def test_similarity_is_a_suggestion_not_an_automatic_semantic_edge(tmp_path):
+    store = MemoryStore(tmp_path / "memories.sqlite3")
+    first = store.create_memory(MemoryCreate(content="The same repeated graph phrase."))
+    second = store.create_memory(MemoryCreate(content="The same repeated graph phrase."))
+
+    assert store.connections_for(first.id) == []
+    assert store.connections_for(second.id) == []
+    assert store.centrality_scores() == {}
+
+
 def test_axiom_versions_keep_history_but_general_search_returns_current(tmp_path):
     store = MemoryStore(tmp_path / "memories.sqlite3")
     old_name = store.create_memory(

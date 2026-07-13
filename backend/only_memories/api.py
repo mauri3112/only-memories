@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from functools import lru_cache
 
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import get_settings
@@ -53,9 +53,17 @@ def health(store: MemoryStore = Depends(get_store)) -> dict[str, str]:
 
 
 @app.post("/memories", response_model=Memory)
-def create_memory(payload: MemoryCreate, store: MemoryStore = Depends(get_store)) -> Memory:
+def create_memory(
+    payload: MemoryCreate,
+    store: MemoryStore = Depends(get_store),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Memory:
     try:
-        return store.create_memory(payload)
+        return (
+            store.create_memory_idempotent(payload, idempotency_key)
+            if idempotency_key
+            else store.create_memory(payload)
+        )
     except KeyError as exc:
         raise HTTPException(status_code=400, detail="Superseded memory not found") from exc
     except ValueError as exc:
@@ -133,6 +141,14 @@ def search(payload: SearchRequest, store: MemoryStore = Depends(get_store)) -> S
             payload.query,
             limit=payload.limit,
             memory_type=payload.type,
+            memory_types=[item.value for item in payload.types],
+            exclude_types=[item.value for item in payload.exclude_types],
+            intent=payload.intent,
+            space_ids=payload.space_ids,
+            planes=[item.value for item in payload.planes],
+            provenance_classes=[item.value for item in payload.provenance_classes],
+            verification_statuses=[item.value for item in payload.verification_statuses],
+            include_generated=payload.include_generated,
             scope=payload.scope,
             include_forgotten=payload.include_forgotten,
             include_expired=payload.include_expired,

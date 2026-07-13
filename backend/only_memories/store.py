@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import sqlite3
 import uuid
@@ -15,8 +16,10 @@ from .schemas import (
     Memory,
     MemoryCreate,
     MemoryRelation,
+    MemoryPlane,
     MemoryType,
     MemoryUpdate,
+    SearchIntent,
     SearchScope,
     SourceLink,
     SourceLinkCreate,
@@ -58,6 +61,14 @@ class MemoryStore:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     source TEXT NOT NULL,
+                    space_id TEXT NOT NULL DEFAULT 'default',
+                    plane TEXT NOT NULL DEFAULT 'knowledge',
+                    provenance_class TEXT NOT NULL DEFAULT 'imported_observation',
+                    verification_status TEXT NOT NULL DEFAULT 'unverified',
+                    producer TEXT,
+                    origin_run_id TEXT,
+                    derivation_depth INTEGER NOT NULL DEFAULT 0,
+                    external_key TEXT,
                     cadence TEXT NOT NULL,
                     expires_at TEXT,
                     base_importance REAL NOT NULL,
@@ -111,6 +122,24 @@ class MemoryStore:
                     created_at TEXT NOT NULL,
                     decided_at TEXT
                 );
+
+                CREATE TABLE IF NOT EXISTS spaces (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    kind TEXT NOT NULL DEFAULT 'general',
+                    metadata TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS idempotency_records (
+                    key TEXT NOT NULL,
+                    operation TEXT NOT NULL,
+                    request_hash TEXT NOT NULL,
+                    resource_id TEXT NOT NULL,
+                    response_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (key, operation)
+                );
                 """
             )
             self._ensure_column(db, "memories", "axiom_key", "TEXT")
@@ -121,6 +150,31 @@ class MemoryStore:
             self._ensure_column(db, "memories", "forgotten_at", "TEXT")
             self._ensure_column(db, "memories", "forget_reason", "TEXT")
             self._ensure_column(db, "connections", "relation", "TEXT NOT NULL DEFAULT 'related'")
+            self._ensure_column(db, "memories", "space_id", "TEXT NOT NULL DEFAULT 'default'")
+            self._ensure_column(db, "memories", "plane", "TEXT NOT NULL DEFAULT 'knowledge'")
+            self._ensure_column(
+                db,
+                "memories",
+                "provenance_class",
+                "TEXT NOT NULL DEFAULT 'imported_observation'",
+            )
+            self._ensure_column(
+                db, "memories", "verification_status", "TEXT NOT NULL DEFAULT 'unverified'"
+            )
+            self._ensure_column(db, "memories", "producer", "TEXT")
+            self._ensure_column(db, "memories", "origin_run_id", "TEXT")
+            self._ensure_column(db, "memories", "derivation_depth", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(db, "memories", "external_key", "TEXT")
+            db.execute(
+                """INSERT OR IGNORE INTO spaces (id, name, kind, metadata, created_at)
+                   VALUES ('default', 'Default', 'general', '{}', ?)""",
+                (utc_now().isoformat(),),
+            )
+            db.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS memories_external_key
+                   ON memories(space_id, source, external_key)
+                   WHERE external_key IS NOT NULL"""
+            )
 
     def _ensure_column(
         self,
@@ -150,6 +204,21 @@ class MemoryStore:
         cadence = payload.cadence
 
         with self.connect() as db:
+            if payload.external_key:
+                existing = db.execute(
+                    """SELECT id, content, type FROM memories
+                       WHERE space_id = ? AND source = ? AND external_key = ?""",
+                    (payload.space_id, payload.source, payload.external_key),
+                ).fetchone()
+                if existing:
+                    if existing["content"] != payload.content or existing["type"] != memory_type.value:
+                        raise ValueError("external_key already exists with a different payload")
+                    return self.get_memory(existing["id"])
+            db.execute(
+                """INSERT OR IGNORE INTO spaces (id, name, kind, metadata, created_at)
+                   VALUES (?, ?, 'general', '{}', ?)""",
+                (payload.space_id, payload.space_id, now.isoformat()),
+            )
             if memory_type == MemoryType.axiom:
                 axiom_key = axiom_key or normalize_axiom_key(payload.content)
                 expires_at = None
@@ -177,10 +246,12 @@ class MemoryStore:
                 """
                 INSERT INTO memories (
                     id, type, content, happened_at, created_at, updated_at, source,
+                    space_id, plane, provenance_class, verification_status, producer,
+                    origin_run_id, derivation_depth, external_key,
                     cadence, expires_at, base_importance, access_count, axiom_key, version,
                     supersedes_id, is_current, embedding, metadata
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     memory_id,
@@ -190,6 +261,14 @@ class MemoryStore:
                     now.isoformat(),
                     now.isoformat(),
                     payload.source,
+                    payload.space_id,
+                    payload.plane.value,
+                    payload.provenance_class.value,
+                    payload.verification_status.value,
+                    payload.producer,
+                    payload.origin_run_id,
+                    payload.derivation_depth,
+                    payload.external_key,
                     cadence.value,
                     expires_at.isoformat() if expires_at else None,
                     payload.base_importance,
@@ -217,8 +296,42 @@ class MemoryStore:
                     ),
                 )
 
-        self.suggest_connections(memory_id)
         return self.get_memory(memory_id)
+
+    def create_memory_idempotent(self, payload: MemoryCreate, key: str) -> Memory:
+        operation = "create_memory"
+        canonical = json.dumps(payload.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+        request_hash = hashlib.sha256(canonical.encode()).hexdigest()
+        with self.connect() as db:
+            previous = db.execute(
+                "SELECT * FROM idempotency_records WHERE key = ? AND operation = ?",
+                (key, operation),
+            ).fetchone()
+        if previous:
+            if previous["request_hash"] != request_hash:
+                raise ValueError("idempotency key was already used with a different payload")
+            return Memory.model_validate_json(previous["response_json"])
+
+        memory = self.create_memory(payload)
+        response_json = memory.model_dump_json()
+        try:
+            with self.connect() as db:
+                db.execute(
+                    """INSERT INTO idempotency_records
+                       (key, operation, request_hash, resource_id, response_json, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (key, operation, request_hash, memory.id, response_json, utc_now().isoformat()),
+                )
+        except sqlite3.IntegrityError:
+            with self.connect() as db:
+                previous = db.execute(
+                    "SELECT * FROM idempotency_records WHERE key = ? AND operation = ?",
+                    (key, operation),
+                ).fetchone()
+            if previous is None or previous["request_hash"] != request_hash:
+                raise ValueError("idempotency key was already used with a different payload")
+            return Memory.model_validate_json(previous["response_json"])
+        return memory
 
     def update_memory(self, memory_id: str, payload: MemoryUpdate) -> Memory:
         memory = self.get_memory(memory_id)
@@ -317,7 +430,6 @@ class MemoryStore:
                 db.execute("DELETE FROM source_links WHERE memory_id = ?", (memory_id,))
                 for source_link in payload.source_links:
                     self._insert_source_link(db, memory_id, source_link)
-        self.suggest_connections(memory_id)
         return self.get_memory(memory_id)
 
     def forget_memory(self, memory_id: str, reason: str | None = None) -> Memory:
@@ -365,12 +477,43 @@ class MemoryStore:
         include_versions: bool = False,
         include_forgotten: bool = False,
         include_expired: bool = False,
+        space_ids: list[str] | None = None,
+        planes: list[str] | None = None,
+        memory_types: list[str] | None = None,
+        exclude_types: list[str] | None = None,
+        provenance_classes: list[str] | None = None,
+        verification_statuses: list[str] | None = None,
+        include_generated: bool = True,
     ) -> list[Memory]:
         filters = []
         params: list[object] = []
         if memory_type:
             filters.append("type = ?")
             params.append(memory_type)
+        if memory_types:
+            filters.append(f"type IN ({','.join('?' for _ in memory_types)})")
+            params.extend(memory_types)
+        if exclude_types:
+            filters.append(f"type NOT IN ({','.join('?' for _ in exclude_types)})")
+            params.extend(exclude_types)
+        if space_ids:
+            filters.append(f"space_id IN ({','.join('?' for _ in space_ids)})")
+            params.extend(space_ids)
+        if planes:
+            filters.append(f"plane IN ({','.join('?' for _ in planes)})")
+            params.extend(planes)
+        if provenance_classes:
+            filters.append(
+                f"provenance_class IN ({','.join('?' for _ in provenance_classes)})"
+            )
+            params.extend(provenance_classes)
+        if verification_statuses:
+            filters.append(
+                f"verification_status IN ({','.join('?' for _ in verification_statuses)})"
+            )
+            params.extend(verification_statuses)
+        if not include_generated:
+            filters.append("provenance_class NOT IN ('agent_inference', 'agent_recap', 'system_event')")
         if not include_versions:
             filters.append("is_current = 1")
         if not include_forgotten:
@@ -402,6 +545,14 @@ class MemoryStore:
         scope: SearchScope = SearchScope.general,
         include_forgotten: bool = False,
         include_expired: bool = False,
+        intent: SearchIntent = SearchIntent.answer,
+        space_ids: list[str] | None = None,
+        planes: list[str] | None = None,
+        memory_types: list[str] | None = None,
+        exclude_types: list[str] | None = None,
+        provenance_classes: list[str] | None = None,
+        verification_statuses: list[str] | None = None,
+        include_generated: bool = False,
     ) -> list[Memory]:
         query_embedding = embed_text(query)
         memories = self.list_memories(
@@ -410,6 +561,13 @@ class MemoryStore:
             include_versions=scope == SearchScope.remembering,
             include_forgotten=include_forgotten,
             include_expired=include_expired,
+            space_ids=space_ids,
+            planes=planes or [MemoryPlane.knowledge.value],
+            memory_types=memory_types,
+            exclude_types=exclude_types,
+            provenance_classes=provenance_classes,
+            verification_statuses=verification_statuses,
+            include_generated=include_generated or intent in {SearchIntent.audit, SearchIntent.maintenance},
         )
         centrality = self.centrality_scores()
 
@@ -421,6 +579,32 @@ class MemoryStore:
                 similarity=max(similarity, 0),
                 centrality=centrality.get(memory.id, 0),
             )
+            authority = {
+                "primary_source": 1.0,
+                "user_assertion": 0.9,
+                "imported_observation": 0.75,
+                "agent_inference": 0.4,
+                "agent_recap": 0.2,
+                "system_event": 0.2,
+            }.get(memory.provenance_class.value, 0.5)
+            verification = {
+                "verified": 1.0,
+                "corroborated": 0.8,
+                "unverified": 0.4,
+                "disputed": 0.1,
+                "retracted": 0.0,
+            }.get(memory.verification_status.value, 0.4)
+            if intent == SearchIntent.evidence:
+                memory.rank = round((memory.rank or 0) * 0.65 + authority * 0.2 + verification * 0.15, 6)
+            elif memory.verification_status.value in {"disputed", "retracted"}:
+                memory.rank = round((memory.rank or 0) * 0.5, 6)
+            memory.rank_breakdown = {
+                "similarity": round(max(similarity, 0), 6),
+                "authority": authority,
+                "verification": verification,
+                "semantic_centrality": round(centrality.get(memory.id, 0), 6),
+                "total": memory.rank or 0,
+            }
             ranked.append(memory)
 
         ranked.sort(key=lambda item: item.rank or 0, reverse=True)
@@ -917,6 +1101,7 @@ class MemoryStore:
                 JOIN memories m ON m.id = c.target_id
                 WHERE m.is_current = 1
                   AND m.is_forgotten = 0
+                  AND c.reason != 'similarity'
                   AND (m.expires_at IS NULL OR m.expires_at > ?)
                 GROUP BY target_id
                 """,
@@ -1020,6 +1205,14 @@ class MemoryStore:
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
             source=row["source"],
+            space_id=row["space_id"],
+            plane=row["plane"],
+            provenance_class=row["provenance_class"],
+            verification_status=row["verification_status"],
+            producer=row["producer"],
+            origin_run_id=row["origin_run_id"],
+            derivation_depth=int(row["derivation_depth"]),
+            external_key=row["external_key"],
             source_links=self.source_links_for(row["id"]),
             cadence=Cadence(row["cadence"]),
             expires_at=datetime.fromisoformat(row["expires_at"]) if row["expires_at"] else None,

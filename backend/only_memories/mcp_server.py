@@ -25,6 +25,12 @@ def run() -> None:
         source_label: str | None = None,
         source_kind: str = "mcp",
         supersedes_id: str | None = None,
+        space_id: str = "default",
+        plane: str = "knowledge",
+        provenance_class: str = "imported_observation",
+        verification_status: str = "unverified",
+        external_key: str | None = None,
+        origin_run_id: str | None = None,
     ) -> dict:
         """Create a new local memory."""
 
@@ -45,6 +51,12 @@ def run() -> None:
                 axiom_key=axiom_key,
                 supersedes_id=supersedes_id,
                 source_links=source_links,
+                space_id=space_id,
+                plane=plane,
+                provenance_class=provenance_class,
+                verification_status=verification_status,
+                external_key=external_key,
+                origin_run_id=origin_run_id,
             )
         )
         return memory.model_dump(mode="json")
@@ -55,6 +67,13 @@ def run() -> None:
         limit: int = 5,
         include_versions: bool = False,
         include_forgotten: bool = False,
+        intent: str = "answer",
+        space_ids: list[str] | None = None,
+        planes: list[str] | None = None,
+        types: list[str] | None = None,
+        provenance_classes: list[str] | None = None,
+        verification_statuses: list[str] | None = None,
+        include_generated: bool = False,
     ) -> list[dict]:
         """Search ranked memories. Set include_versions for remembering searches."""
 
@@ -63,6 +82,13 @@ def run() -> None:
             limit=limit,
             scope=SearchScope.remembering if include_versions else SearchScope.general,
             include_forgotten=include_forgotten,
+            intent=intent,
+            space_ids=space_ids or [],
+            planes=planes or ["knowledge"],
+            types=types or [],
+            provenance_classes=provenance_classes or [],
+            verification_statuses=verification_statuses or [],
+            include_generated=include_generated,
         )
         return [
             memory.model_dump(mode="json")
@@ -71,6 +97,13 @@ def run() -> None:
                 limit=limit,
                 scope=request.scope,
                 include_forgotten=request.include_forgotten,
+                intent=request.intent,
+                space_ids=request.space_ids,
+                planes=[item.value for item in request.planes],
+                memory_types=[item.value for item in request.types],
+                provenance_classes=[item.value for item in request.provenance_classes],
+                verification_statuses=[item.value for item in request.verification_statuses],
+                include_generated=request.include_generated,
             )
         ]
 

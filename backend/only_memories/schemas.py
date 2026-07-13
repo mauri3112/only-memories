@@ -36,6 +36,36 @@ class SearchScope(StrEnum):
     remembering = "remembering"
 
 
+class MemoryPlane(StrEnum):
+    knowledge = "knowledge"
+    activity = "activity"
+
+
+class ProvenanceClass(StrEnum):
+    user_assertion = "user_assertion"
+    primary_source = "primary_source"
+    imported_observation = "imported_observation"
+    agent_inference = "agent_inference"
+    agent_recap = "agent_recap"
+    system_event = "system_event"
+
+
+class VerificationStatus(StrEnum):
+    unverified = "unverified"
+    corroborated = "corroborated"
+    verified = "verified"
+    disputed = "disputed"
+    retracted = "retracted"
+
+
+class SearchIntent(StrEnum):
+    answer = "answer"
+    evidence = "evidence"
+    action = "action"
+    maintenance = "maintenance"
+    audit = "audit"
+
+
 class MemoryRelation(StrEnum):
     related = "related"
     updates = "updates"
@@ -70,6 +100,14 @@ class MemoryCreate(BaseModel):
     content: str = Field(min_length=1)
     happened_at: datetime | None = None
     source: str = "manual"
+    space_id: str = Field(default="default", min_length=1)
+    plane: MemoryPlane = MemoryPlane.knowledge
+    provenance_class: ProvenanceClass = ProvenanceClass.imported_observation
+    verification_status: VerificationStatus = VerificationStatus.unverified
+    producer: str | None = None
+    origin_run_id: str | None = None
+    derivation_depth: int = Field(default=0, ge=0)
+    external_key: str | None = None
     source_links: list[SourceLinkCreate] = Field(default_factory=list)
     cadence: Cadence = Cadence.none
     expires_at: datetime | None = None
@@ -103,6 +141,14 @@ class Memory(BaseModel):
     created_at: datetime
     updated_at: datetime
     source: str
+    space_id: str = "default"
+    plane: MemoryPlane = MemoryPlane.knowledge
+    provenance_class: ProvenanceClass = ProvenanceClass.imported_observation
+    verification_status: VerificationStatus = VerificationStatus.unverified
+    producer: str | None = None
+    origin_run_id: str | None = None
+    derivation_depth: int = 0
+    external_key: str | None = None
     source_links: list[SourceLink] = Field(default_factory=list)
     cadence: Cadence
     expires_at: datetime | None
@@ -117,6 +163,7 @@ class Memory(BaseModel):
     forget_reason: str | None = None
     metadata: dict[str, Any]
     rank: float | None = None
+    rank_breakdown: dict[str, float] | None = None
 
 
 class Connection(BaseModel):
@@ -132,6 +179,14 @@ class SearchRequest(BaseModel):
     query: str = Field(min_length=1)
     limit: int = Field(default=10, ge=1, le=50)
     type: MemoryType | None = None
+    types: list[MemoryType] = Field(default_factory=list)
+    exclude_types: list[MemoryType] = Field(default_factory=list)
+    intent: SearchIntent = SearchIntent.answer
+    space_ids: list[str] = Field(default_factory=list)
+    planes: list[MemoryPlane] = Field(default_factory=lambda: [MemoryPlane.knowledge])
+    provenance_classes: list[ProvenanceClass] = Field(default_factory=list)
+    verification_statuses: list[VerificationStatus] = Field(default_factory=list)
+    include_generated: bool = False
     scope: SearchScope = SearchScope.general
     include_forgotten: bool = False
     include_expired: bool = False

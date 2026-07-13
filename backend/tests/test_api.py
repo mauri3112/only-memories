@@ -55,3 +55,37 @@ def test_forgetting_axiom_returns_conflict(tmp_path):
 
     assert response.status_code == 409
     assert response.json() == {"detail": "Axioms cannot be forgotten"}
+
+
+def test_api_forwards_search_contract_and_replays_idempotent_create(tmp_path):
+    store = MemoryStore(tmp_path / "configured.sqlite3")
+    app.dependency_overrides[get_store] = lambda: store
+
+    try:
+        client = TestClient(app)
+        body = {
+            "content": "Verified campaign evidence.",
+            "space_id": "experiment:run-two",
+            "provenance_class": "primary_source",
+            "verification_status": "verified",
+        }
+        first = client.post("/memories", json=body, headers={"Idempotency-Key": "fixture-1"})
+        replay = client.post("/memories", json=body, headers={"Idempotency-Key": "fixture-1"})
+        search = client.post(
+            "/search",
+            json={
+                "query": "campaign evidence",
+                "intent": "evidence",
+                "space_ids": ["experiment:run-two"],
+                "planes": ["knowledge"],
+                "provenance_classes": ["primary_source"],
+                "verification_statuses": ["verified"],
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert first.status_code == 200
+    assert replay.json()["id"] == first.json()["id"]
+    assert [item["id"] for item in search.json()["results"]] == [first.json()["id"]]
+    assert search.json()["results"][0]["rank_breakdown"]["authority"] == 1.0

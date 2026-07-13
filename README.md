@@ -27,6 +27,8 @@ This repository starts with:
 - Connection creation based on cosine similarity.
 - Typed connection relations for related, updating, extending, derived, and supporting facts.
 - Ranked search and graph navigation endpoints.
+- First-class spaces, knowledge/activity planes, provenance, verification status, and
+  idempotent external writes for agent experiments.
 - Axiom version chains where normal search sees only the newest version.
 - Versioned replacement chains for non-axiom memories through `supersedes_id`.
 - Soft forgetting where hidden memories remain inspectable for audit and recovery.
@@ -137,6 +139,19 @@ curl -X POST http://localhost:8765/search \
   -H "content-type: application/json" \
   -d '{"query": "what does the user prefer when debugging local services?", "limit": 5}'
 ```
+
+Experiment retrieval should be explicitly scoped. Normal search defaults to the
+`knowledge` plane and excludes agent-generated recaps; audit callers can opt into both:
+
+```bash
+curl -X POST http://localhost:8765/search \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"Northstar evidence","intent":"evidence","space_ids":["experiment:run-two"],"planes":["knowledge"],"provenance_classes":["primary_source"],"verification_statuses":["verified"]}'
+```
+
+Writers can supply `external_key` and/or `Idempotency-Key`. Replays return the original
+memory; reusing the same key with a different payload returns a conflict. Agent run
+recaps belong in the `activity` plane with `provenance_class: "agent_recap"`.
 
 Remembering search includes old axiom versions:
 
