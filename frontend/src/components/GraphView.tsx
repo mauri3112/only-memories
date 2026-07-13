@@ -12,8 +12,8 @@ export function GraphView({ graph, selected, onSelect }: { graph: GraphResponse 
     <div className="graph-stage">
       <div className="graph-canvas" style={{transform:`scale(${zoom})`}}>
         <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden>{nodes.map((node, index) => <line key={node.id} x1="50" y1="50" x2={positions[index][0]} y2={positions[index][1]} />)}</svg>
-        {selected ? <button type="button" className={`graph-node central type-${selected.type}`} style={{left:"50%",top:"50%"}} onClick={() => onSelect(selected)}><span>{selected.type}</span>{selected.content}</button> : null}
-        {nodes.map((node, index) => <button type="button" key={node.id} className={`graph-node type-${node.type}`} style={{left:`${positions[index][0]}%`,top:`${positions[index][1]}%`}} onClick={() => onSelect(node)}><span>{node.type}</span>{node.content}</button>)}
+        {selected ? <button type="button" className={`graph-node central type-${selected.type}`} style={{left:"50%",top:"50%"}} onClick={() => onSelect(selected)}><span className="graph-node-type">{selected.type}</span><span className="graph-node-copy">{selected.content}</span></button> : null}
+        {nodes.map((node, index) => <button type="button" key={node.id} className={`graph-node type-${node.type}`} style={{left:`${positions[index][0]}%`,top:`${positions[index][1]}%`}} onClick={() => onSelect(node)}><span className="graph-node-type">{node.type}</span><span className="graph-node-copy">{node.content}</span></button>)}
         {nodes.map((node, index) => <span key={`label-${node.id}`} className="edge-label" style={{left:`${(positions[index][0]+50)/2}%`,top:`${(positions[index][1]+50)/2}%`}}>{graph?.edges.find(edge => edge.target_id === node.id)?.relation ?? "related"}</span>)}
       </div>
     </div>

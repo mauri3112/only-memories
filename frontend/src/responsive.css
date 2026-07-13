@@ -9,9 +9,40 @@
 .workspace,
 .topbar,
 .explorer,
+.list-panel,
+.graph-panel,
+.graph-stage,
 .composer,
 .fields {
   min-width: 0;
+}
+
+.list-panel,
+.graph-panel,
+.graph-stage {
+  min-height: 0;
+}
+
+.list-panel,
+.graph-panel {
+  overflow: hidden;
+}
+
+.table-wrap {
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.memory-copy,
+.graph-node-copy {
+  overflow-wrap: anywhere;
+}
+
+.memory-copy {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .topbar {
@@ -94,6 +125,34 @@
   height: 100%;
 }
 
+.graph-node-type,
+.graph-node-copy {
+  display: block;
+}
+
+.graph-node {
+  height: 68px;
+  overflow: hidden;
+}
+
+.graph-node.central {
+  height: 82px;
+}
+
+.graph-node-type {
+  margin-bottom: 5px;
+  font-weight: 750;
+}
+
+.graph-node-copy {
+  display: -webkit-box;
+  overflow: hidden;
+  margin-bottom: 0;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  font-weight: 400;
+}
+
 .zoom-level {
   min-width: 42px;
   align-self: center;
@@ -132,8 +191,8 @@ textarea:focus-visible {
   }
 
   .workspace {
-    height: auto;
-    min-height: 100vh;
+    height: 100vh;
+    min-height: 0;
   }
 
   .inspector {
@@ -172,6 +231,19 @@ textarea:focus-visible {
 
   .topbar {
     display: flex;
+  }
+
+  .workspace {
+    height: auto;
+    min-height: 100vh;
+  }
+
+  .list-panel {
+    max-height: min(70vh, 36rem);
+  }
+
+  .graph-panel {
+    min-height: 430px;
   }
 
   .filter-control { order: 2; }
