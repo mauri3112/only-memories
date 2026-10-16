@@ -33,3 +33,8 @@ cd frontend
 npm install
 npm run build
 ```
+
+## Solo development workflow
+
+- This is a solo developer project. Commit and push completed changes directly to `main` unless the user specifies a different branch or workflow.
+- Always have a review subagent check the changes before pushing. Address its findings and complete the relevant checks before the push.
